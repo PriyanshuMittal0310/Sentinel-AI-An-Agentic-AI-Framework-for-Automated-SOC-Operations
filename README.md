@@ -133,11 +133,13 @@ sentinel-ai/
 
 **📋 Week 1 Checkpoint**: ✅ 5 sample alerts pass through empty graph end-to-end
 
-### 🔄 Week 2: Core Agents (IN PROGRESS)
-- [ ] Triage Agent with ReAct reasoning loop
-- [ ] Context Agent with ChromaDB semantic search
-- [ ] Full two-agent pipeline (Triage → Context)
-- [ ] Unit tests and 50-alert evaluation
+### ✅ Week 2: Core Agents (COMPLETED)
+- [x] Triage Agent with ReAct reasoning loop
+- [x] Context Agent with ChromaDB semantic search
+- [x] Full two-agent pipeline (Triage → Context)
+- [x] Unit tests and 50-alert evaluation
+
+**📋 Week 2 Checkpoint**: ✅ 50 alerts processed and logged in evaluation/results/phase2_50_alerts.csv
 
 ### 🛡️ Week 3: Security & Investigation  
 - [ ] Guardrail Agent (Layer 1: regex, Layer 2: LLM)

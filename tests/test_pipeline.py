@@ -13,6 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from pipeline.state import AlertState, validate_alert_state, create_empty_alert_state
+from pipeline.graph import SentinelAIGraph
 
 
 class TestAlertState:
@@ -99,6 +100,24 @@ class TestPipelineIntegration:
         # Agent outputs should be set
         assert state["is_clean"] is True
         assert state["severity"] == "P2"
+
+    def test_phase2_graph_populates_triage_and_context(self):
+        """Phase 2 integration: real triage/context nodes should populate state fields."""
+        graph = SentinelAIGraph()
+        alert = {
+            "alert_id": "phase2_001",
+            "raw_payload": "External host performed port scan across subnet",
+            "source_ip": "10.1.1.15",
+            "event_type": "PortScan",
+        }
+
+        result = graph.process_alert(alert)
+
+        assert result["severity"] in ["P1", "P2", "P3", "P4"]
+        assert result.get("triage_rationale") is not None
+        assert isinstance(result.get("retrieved_techniques"), list)
+        assert len(result.get("retrieved_techniques")) >= 1
+        assert isinstance(result.get("context_query"), str)
 
 
 if __name__ == "__main__":

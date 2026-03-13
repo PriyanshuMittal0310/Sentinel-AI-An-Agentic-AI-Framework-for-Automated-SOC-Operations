@@ -39,6 +39,13 @@ try:
 except ImportError:
     from pipeline.state import AlertState, log_agent_execution, add_error, finalize_state
 
+try:
+    from agents.triage_agent import TriageAgent
+    from agents.context_agent import ContextAgent
+except ImportError:
+    from ..agents.triage_agent import TriageAgent
+    from ..agents.context_agent import ContextAgent
+
 # Set up logging
 logger = logging.getLogger(__name__)
 
@@ -61,6 +68,8 @@ class SentinelAIGraph:
         self.checkpointer_path = checkpointer_path
         self.graph = None
         self.checkpointer = None
+        self.triage_agent = TriageAgent()
+        self.context_agent = ContextAgent()
         
         if LANGGRAPH_AVAILABLE:
             self._build_graph()
@@ -105,7 +114,7 @@ class SentinelAIGraph:
             self.graph = self.graph.compile()
             logger.warning(f"⚠️  Compiled without checkpointing due to: {e}")
 
-    # ===== AGENT STUB IMPLEMENTATIONS (Week 1) =====
+    # ===== AGENT IMPLEMENTATIONS =====
     
     def _guardrail_agent_stub(self, state: AlertState) -> AlertState:
         """
@@ -144,36 +153,22 @@ class SentinelAIGraph:
 
     def _triage_agent_stub(self, state: AlertState) -> AlertState:
         """
-        Triage Agent stub - Week 1 implementation.
-        
-        For Week 1, this assigns basic severity based on event type.
-        Week 2 will implement full ReAct reasoning with LLM.
+        Triage Agent node.
+
+        Phase 2 implementation uses the TriageAgent ReAct-style flow.
         """
         start_time = time.time()
         
         try:
             logger.info(f"📋 Triage Agent processing alert {state['alert_id']}")
-            
-            # Week 1: Simple rule-based severity assignment
-            event_type = state.get("event_type", "Unknown")
-            
-            # Basic severity mapping for common CICIDS2017 attacks
-            severity_map = {
-                "BENIGN": "P4",
-                "DoS Hulk": "P1", 
-                "DoS GoldenEye": "P1",
-                "DDoS": "P1",
-                "PortScan": "P2",
-                "Brute Force -Web": "P2",
-                "SQL Injection": "P1",
-                "Bot": "P2"
-            }
-            
-            state["severity"] = severity_map.get(event_type, "P3")
-            state["mitre_tactic"] = "Unknown"  # Will be determined by LLM in Week 2
-            state["mitre_technique"] = "T0000"  # Will be determined by LLM in Week 2
-            state["confidence"] = 0.8  # Reasonable confidence for rule-based approach
-            state["triage_rationale"] = f"Week 1 stub: severity based on event type '{event_type}'"
+
+            triage_result = self.triage_agent.classify_alert(dict(state))
+
+            state["severity"] = triage_result.get("severity", "P3")
+            state["mitre_tactic"] = triage_result.get("mitre_tactic", "Unknown")
+            state["mitre_technique"] = triage_result.get("mitre_technique", "T0000")
+            state["confidence"] = triage_result.get("confidence", 0.5)
+            state["triage_rationale"] = triage_result.get("triage_rationale", "No rationale")
             
             execution_time = time.time() - start_time
             state = log_agent_execution(state, "triage", execution_time, True)
@@ -190,65 +185,32 @@ class SentinelAIGraph:
 
     def _context_agent_stub(self, state: AlertState) -> AlertState:
         """
-        Context Agent stub - Week 1 implementation.
-        
-        For Week 1, this returns mock MITRE techniques.
-        Week 2 will implement ChromaDB retrieval with embeddings.
+        Context Agent node.
+
+        Phase 2 implementation retrieves top MITRE techniques from ChromaDB.
         """
         start_time = time.time()
         
         try:
             logger.info(f"📚 Context Agent processing alert {state['alert_id']}")
-            
-            # Week 1: Mock MITRE techniques based on event type
-            event_type = state.get("event_type", "Unknown")
-            
-            # Mock retrieved techniques
-            mock_techniques = {
-                "PortScan": [
-                    {
-                        "technique_id": "T1046",
-                        "name": "Network Service Scanning",
-                        "description": "Adversaries may attempt to get a listing of services running on remote hosts",
-                        "tactics": "Discovery"
-                    }
-                ],
-                "DoS Hulk": [
-                    {
-                        "technique_id": "T1499.002", 
-                        "name": "Network Denial of Service",
-                        "description": "Adversaries may perform Network Denial of Service attacks",
-                        "tactics": "Impact"
-                    }
-                ],
-                "SQL Injection": [
-                    {
-                        "technique_id": "T1190",
-                        "name": "Exploit Public-Facing Application",
-                        "description": "Adversaries may attempt to take advantage of a weakness in an Internet-facing application",
-                        "tactics": "Initial Access"
-                    }
-                ]
+
+            triage_result = {
+                "severity": state.get("severity"),
+                "mitre_tactic": state.get("mitre_tactic"),
+                "mitre_technique": state.get("mitre_technique"),
+                "triage_rationale": state.get("triage_rationale"),
+                "event_type": state.get("event_type"),
             }
-            
-            # Get relevant techniques or default
-            techniques = mock_techniques.get(event_type, [
-                {
-                    "technique_id": "T0000",
-                    "name": "Unknown Technique",
-                    "description": "No specific technique identified for this event type",
-                    "tactics": "Unknown"
-                }
-            ])
-            
-            state["retrieved_techniques"] = techniques
-            state["context_query"] = f"Week 1 stub query for {event_type}"
-            state["context_metadata"] = {"source": "mock_data", "query_type": "stub"}
+            context_result = self.context_agent.enrich_alert(dict(state), triage_result)
+
+            state["retrieved_techniques"] = context_result.get("retrieved_techniques", [])
+            state["context_query"] = context_result.get("context_query", "")
+            state["context_metadata"] = context_result.get("context_metadata", {})
             
             execution_time = time.time() - start_time
             state = log_agent_execution(state, "context", execution_time, True)
             
-            logger.info(f"✅ Context Agent completed ({len(techniques)} techniques)")
+            logger.info(f"✅ Context Agent completed ({len(state['retrieved_techniques'])} techniques)")
             
         except Exception as e:
             execution_time = time.time() - start_time

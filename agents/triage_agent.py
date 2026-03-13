@@ -1,167 +1,205 @@
 """
-Triage Agent — SENTINEL-AI Severity Classification
+Triage Agent — SENTINEL-AI Severity Classification (Phase 2)
 
-Implements the Triage Agent using ReAct (Reason + Act) pattern:
-1. Reads security alert
-2. Reasons step-by-step about severity
-3. Maps to MITRE ATT&CK tactic and technique  
-4. Outputs: Severity (P1-P4), MITRE tactic, technique, confidence, rationale
-
-Tools available:
-- sigma_matcher: Match alert against Sigma rules
-- mitre_lookup: Look up MITRE ATT&CK technique details
-
-Week 1: Scaffold implementation — full ReAct loop in Week 2.
+Implements a practical ReAct-style triage flow:
+1. Observe alert fields and payload indicators.
+2. Reason over attack signal strength.
+3. Act by producing severity + MITRE mapping.
+4. Optionally refine with local LLM output (if available).
 """
 
+import json
 import logging
-from typing import Dict, Any, Optional, Tuple
-from datetime import datetime
+import re
+from typing import Dict, Any, List, Optional
 
-# LLM imports (available after pip install)
 try:
     from langchain_ollama import OllamaLLM
-    from langchain_core.prompts import PromptTemplate
     LANGCHAIN_AVAILABLE = True
 except ImportError:
     LANGCHAIN_AVAILABLE = False
 
-# Set up logging
 logger = logging.getLogger(__name__)
 
 
-# System prompt for Triage Agent
-TRIAGE_SYSTEM_PROMPT = """You are a senior cybersecurity analyst at a Security Operations Centre (SOC). 
-Your task is to triage security alerts and classify their severity.
+TRIAGE_SYSTEM_PROMPT = """You are a SOC triage analyst.
+Return ONLY valid JSON with keys:
+reasoning, severity, mitre_tactic, mitre_technique, confidence, rationale
 
-Given a security alert, you must:
-1. REASON about what kind of attack this could be
-2. LOOK UP relevant MITRE ATT&CK techniques  
-3. CLASSIFY the severity using the P1-P4 scale
-4. PROVIDE a clear rationale for your decision
-
-Severity Scale:
-- P1 (Critical): Active breach, data loss imminent, or critical system compromise
-- P2 (High): Active attack in progress or high-value target at risk
-- P3 (Medium): Suspicious activity requiring investigation
-- P4 (Low): Anomalous but likely benign activity
-
-Always structure your response as JSON with these fields:
-{
-    "reasoning": "Step-by-step analysis...",
-    "severity": "P1|P2|P3|P4",
-    "mitre_tactic": "tactic name",
-    "mitre_technique": "T1234",
-    "confidence": 0.0-1.0,
-    "rationale": "Clear explanation for the classification"
-}"""
+Severity scale:
+- P1: active exploitation / service impact / high certainty compromise
+- P2: strong malicious evidence, high risk activity
+- P3: suspicious but uncertain activity
+- P4: likely benign or low-risk anomaly
+"""
 
 
 class TriageAgent:
-    """
-    Triage Agent that classifies security alert severity using ReAct reasoning.
-    
-    Week 1: Basic rule-based classification
-    Week 2: Full ReAct loop with LLM reasoning and tool use
-    """
-    
+    """Phase 2 triage agent with deterministic logic + optional LLM enhancement."""
+
     def __init__(self, model_name: str = "llama3.1", max_iterations: int = 3):
-        """
-        Initialize the Triage Agent.
-        
-        Args:
-            model_name: Ollama model to use for reasoning
-            max_iterations: Maximum ReAct loop iterations
-        """
         self.model_name = model_name
         self.max_iterations = max_iterations
         self.llm = None
-        
-        # Simple severity mapping for Week 1 stub
+
+        # Canonical mappings for CICIDS labels used in this project.
         self.severity_map = {
-            'BENIGN': ('P4', 'None', 'T0000'),
-            'DoS Hulk': ('P1', 'Impact', 'T1499.002'),
-            'DoS GoldenEye': ('P1', 'Impact', 'T1499.002'),
-            'DoS slowloris': ('P1', 'Impact', 'T1499.002'),
-            'DoS Slowhttptest': ('P1', 'Impact', 'T1499.002'),
-            'DDoS': ('P1', 'Impact', 'T1499.002'),
-            'PortScan': ('P2', 'Discovery', 'T1046'),
-            'Brute Force -Web': ('P2', 'Credential Access', 'T1110.001'),
-            'Brute Force -XSS': ('P2', 'Credential Access', 'T1110.001'),
-            'SQL Injection': ('P1', 'Initial Access', 'T1190'),
-            'Web Attack - Sql Injection': ('P1', 'Initial Access', 'T1190'),
-            'Web Attack - Brute Force': ('P2', 'Credential Access', 'T1110.001'),
-            'Web Attack - XSS': ('P2', 'Execution', 'T1059.007'),
-            'Infiltration': ('P1', 'Lateral Movement', 'T1055'),
-            'Bot': ('P2', 'Execution', 'T1059'),
-            'Heartbleed': ('P1', 'Initial Access', 'T1190'),
+            "BENIGN": ("P4", "None", "T0000"),
+            "DoS Hulk": ("P1", "Impact", "T1499.002"),
+            "DoS GoldenEye": ("P1", "Impact", "T1499.002"),
+            "DoS slowloris": ("P1", "Impact", "T1499.002"),
+            "DoS Slowhttptest": ("P1", "Impact", "T1499.002"),
+            "DDoS": ("P1", "Impact", "T1499.002"),
+            "PortScan": ("P2", "Discovery", "T1046"),
+            "Brute Force -Web": ("P2", "Credential Access", "T1110.001"),
+            "Brute Force -XSS": ("P2", "Credential Access", "T1110.001"),
+            "SQL Injection": ("P1", "Initial Access", "T1190"),
+            "Web Attack - Sql Injection": ("P1", "Initial Access", "T1190"),
+            "Web Attack - Brute Force": ("P2", "Credential Access", "T1110.001"),
+            "Web Attack - XSS": ("P2", "Execution", "T1059.007"),
+            "Infiltration": ("P1", "Lateral Movement", "T1055"),
+            "Bot": ("P2", "Execution", "T1059"),
+            "Heartbleed": ("P1", "Initial Access", "T1190"),
         }
-        
+
         if LANGCHAIN_AVAILABLE:
             self._initialize_llm()
 
     def _initialize_llm(self) -> None:
-        """Initialize Ollama LLM client."""
         try:
             self.llm = OllamaLLM(model=self.model_name)
-            logger.info(f"✅ Triage Agent initialized with model: {self.model_name}")
-        except Exception as e:
-            logger.warning(f"⚠️  Could not initialize LLM: {e}. Will use rule-based fallback.")
+            logger.info("TriageAgent initialized with model: %s", self.model_name)
+        except Exception as exc:
+            logger.warning("LLM initialization failed, using deterministic mode: %s", exc)
             self.llm = None
 
-    def classify_alert(self, alert_data: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Classify the severity of a security alert.
-        
-        Args:
-            alert_data: Alert data dictionary
-            
-        Returns:
-            Classification result with severity, MITRE info, and rationale
-        """
-        event_type = alert_data.get('event_type', 'Unknown')
-        source_ip = alert_data.get('source_ip', 'Unknown')
-        
-        # Week 1: Rule-based classification
-        if event_type in self.severity_map:
-            severity, tactic, technique = self.severity_map[event_type]
-            rationale = f"Rule-based classification: {event_type} mapped to severity {severity}"
-            confidence = 0.85
-        else:
-            # Unknown event type - medium priority
-            severity = "P3"
-            tactic = "Unknown"
-            technique = "T0000"
-            rationale = f"Unknown event type '{event_type}' - defaulting to Medium priority (P3)"
+    def _payload_signals(self, payload: str) -> List[str]:
+        signals = []
+        checks = {
+            "port scan behavior": r"port\s*scan|syn\s*scan|nmap",
+            "credential attack behavior": r"brute\s*force|failed\s*login|password\s*attempt",
+            "sql injection indicators": r"sql\s*injection|union\s+select|or\s+1=1",
+            "denial-of-service indicators": r"ddos|dos|slowloris|hulk|flood",
+            "web exploit indicators": r"xss|<script>|public-facing|exploit",
+        }
+        for label, pattern in checks.items():
+            if re.search(pattern, payload, flags=re.IGNORECASE):
+                signals.append(label)
+        return signals
+
+    def _reason_and_classify(self, alert_data: Dict[str, Any]) -> Dict[str, Any]:
+        event_type = str(alert_data.get("event_type", "Unknown"))
+        payload = str(alert_data.get("raw_payload", ""))
+
+        # ReAct-style iterative reasoning (bounded loop).
+        observations: List[str] = []
+        current_guess = "P3"
+        tactic = "Unknown"
+        technique = "T0000"
+
+        for step in range(self.max_iterations):
+            if step == 0:
+                observations.append(f"Observed event_type={event_type}")
+                if event_type in self.severity_map:
+                    current_guess, tactic, technique = self.severity_map[event_type]
+                    observations.append("Known CICIDS label mapping found")
+                    break
+
+            if step == 1:
+                signals = self._payload_signals(payload)
+                if signals:
+                    observations.append(f"Payload signals: {', '.join(signals)}")
+                    if any("denial-of-service" in s for s in signals):
+                        current_guess, tactic, technique = "P1", "Impact", "T1499.002"
+                    elif any("sql injection" in s for s in signals):
+                        current_guess, tactic, technique = "P1", "Initial Access", "T1190"
+                    elif any("credential attack" in s for s in signals):
+                        current_guess, tactic, technique = "P2", "Credential Access", "T1110.001"
+                    elif any("port scan" in s for s in signals):
+                        current_guess, tactic, technique = "P2", "Discovery", "T1046"
+                    else:
+                        current_guess = "P3"
+                else:
+                    observations.append("No strong malicious payload markers found")
+
+            if step == 2:
+                # Final calibration for unknown/noisy data.
+                if event_type.upper() == "BENIGN":
+                    current_guess, tactic, technique = "P4", "None", "T0000"
+                    observations.append("Benign marker present, lowering severity")
+
+        confidence = 0.85 if event_type in self.severity_map else 0.65
+        if current_guess == "P3" and not payload:
             confidence = 0.5
-        
+
+        reasoning = " | ".join(observations) if observations else "Insufficient indicators"
+        rationale = f"Classified {event_type} as {current_guess} based on mapped label and payload evidence."
+
         return {
-            "severity": severity,
+            "reasoning": reasoning,
+            "severity": current_guess,
             "mitre_tactic": tactic,
             "mitre_technique": technique,
-            "confidence": confidence,
-            "triage_rationale": rationale,
-            "classification_method": "rule-based-stub"
+            "confidence": round(float(confidence), 2),
+            "rationale": rationale,
+            "classification_method": "react-deterministic",
         }
 
-    def get_triage_prompt(self, alert_data: Dict[str, Any]) -> str:
-        """
-        Generate the triage analysis prompt for the LLM.
-        
-        Args:
-            alert_data: Alert data to analyze
-            
-        Returns:
-            Formatted prompt string
-        """
-        return f"""Analyze this security alert and provide a triage classification:
+    def _try_llm_refinement(self, alert_data: Dict[str, Any], deterministic: Dict[str, Any]) -> Dict[str, Any]:
+        if not self.llm:
+            return deterministic
 
-Alert ID: {alert_data.get('alert_id', 'Unknown')}
-Event Type: {alert_data.get('event_type', 'Unknown')}
-Source IP: {alert_data.get('source_ip', 'Unknown')}
-Destination IP: {alert_data.get('destination_ip', 'Unknown')}
-Protocol: {alert_data.get('protocol', 'Unknown')}
-Raw Payload: {alert_data.get('raw_payload', 'No payload')}
-Timestamp: {alert_data.get('timestamp', 'Unknown')}
+        prompt = (
+            TRIAGE_SYSTEM_PROMPT
+            + "\n\nAlert:\n"
+            + json.dumps(alert_data, ensure_ascii=True)
+            + "\n\nInitial deterministic result:\n"
+            + json.dumps(deterministic, ensure_ascii=True)
+        )
+        try:
+            raw = self.llm.invoke(prompt)
+            parsed = json.loads(raw)
+            required = {"severity", "mitre_tactic", "mitre_technique", "confidence", "rationale"}
+            if not required.issubset(parsed.keys()):
+                return deterministic
 
-Provide your analysis following the JSON format specified in your instructions."""
+            sev = parsed.get("severity", deterministic["severity"])
+            if sev not in {"P1", "P2", "P3", "P4"}:
+                sev = deterministic["severity"]
+
+            conf = parsed.get("confidence", deterministic["confidence"])
+            try:
+                conf = float(conf)
+            except Exception:
+                conf = deterministic["confidence"]
+            conf = max(0.0, min(1.0, conf))
+
+            return {
+                "reasoning": parsed.get("reasoning", deterministic.get("reasoning", "")),
+                "severity": sev,
+                "mitre_tactic": parsed.get("mitre_tactic", deterministic["mitre_tactic"]),
+                "mitre_technique": parsed.get("mitre_technique", deterministic["mitre_technique"]),
+                "confidence": round(conf, 2),
+                "triage_rationale": parsed.get("rationale", deterministic["rationale"]),
+                "classification_method": "react-llm",
+            }
+        except Exception:
+            return deterministic
+
+    def classify_alert(self, alert_data: Dict[str, Any]) -> Dict[str, Any]:
+        base = self._reason_and_classify(alert_data)
+        refined = self._try_llm_refinement(alert_data, base)
+
+        # Normalize to pipeline contract field names.
+        if "triage_rationale" not in refined:
+            refined["triage_rationale"] = refined.get("rationale", "")
+
+        return {
+            "severity": refined["severity"],
+            "mitre_tactic": refined.get("mitre_tactic", "Unknown"),
+            "mitre_technique": refined.get("mitre_technique", "T0000"),
+            "confidence": refined.get("confidence", 0.5),
+            "triage_rationale": refined.get("triage_rationale", "No rationale provided"),
+            "classification_method": refined.get("classification_method", "react-deterministic"),
+            "reasoning": refined.get("reasoning", ""),
+        }

@@ -1,0 +1,17 @@
+CICIDS2017 Processing Summary
+========================================
+
+Total alerts processed: 200
+
+Event Types:
+  BENIGN: 100
+  Bot: 20
+  Brute Force -Web: 20
+  DoS Hulk: 20
+  PortScan: 20
+  SQL Injection: 20
+
+Severity Distribution:
+  P1: 40
+  P2: 60
+  P4: 100

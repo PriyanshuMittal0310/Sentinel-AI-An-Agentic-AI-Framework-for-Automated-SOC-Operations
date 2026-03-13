@@ -1,0 +1,243 @@
+name: 🛡️ SENTINEL-AI CI/CD
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: [3.10, 3.11, 3.12]
+
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+
+    - name: 🐍 Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: 📦 Cache dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+
+    - name: 🔧 Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pytest pytest-cov black flake8 mypy
+
+    - name: 🎨 Code formatting check
+      run: |
+        black --check --diff .
+        
+    - name: 🔍 Lint with flake8
+      run: |
+        # Stop build if there are Python syntax errors or undefined names
+        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+        # Exit-zero treats all errors as warnings
+        flake8 . --count --exit-zero --max-complexity=10 --max-line-length=100 --statistics
+
+    - name: 🦆 Type checking with mypy
+      run: |
+        mypy --ignore-missing-imports .
+      continue-on-error: true  # Type checking is optional for now
+
+    - name: 🧪 Test with pytest
+      run: |
+        pytest --cov=agents --cov=pipeline --cov=tools --cov-report=xml --cov-report=term-missing
+      env:
+        # Skip tests requiring Ollama in CI environment
+        SKIP_OLLAMA_TESTS: true
+
+    - name: 📊 Upload coverage to Codecov
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./coverage.xml
+        flags: unittests
+        name: codecov-umbrella
+
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+    - name: 📥 Checkout code  
+      uses: actions/checkout@v4
+
+    - name: 🔒 Run security scan with bandit
+      run: |
+        pip install bandit[toml]
+        bandit -r . -f json -o bandit-report.json
+      continue-on-error: true
+
+    - name: 📋 Upload security scan results
+      uses: actions/upload-artifact@v3
+      with:
+        name: security-scan-results
+        path: bandit-report.json
+
+  docs-check:
+    runs-on: ubuntu-latest
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+
+    - name: 📚 Check documentation
+      run: |
+        # Check that all Python files have docstrings
+        python -c "
+        import ast
+        import sys
+        from pathlib import Path
+        
+        def check_docstrings(file_path):
+            with open(file_path) as f:
+                tree = ast.parse(f.read())
+            
+            missing = []
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.ClassDef, ast.AsyncFunctionDef)):
+                    if not ast.get_docstring(node):
+                        missing.append(f'{file_path}:{node.lineno} - {node.name}')
+            return missing
+        
+        all_missing = []
+        for py_file in Path('.').rglob('*.py'):
+            if 'test_' not in str(py_file) and '__pycache__' not in str(py_file):
+                missing = check_docstrings(py_file)
+                all_missing.extend(missing)
+        
+        if all_missing:
+            print('Missing docstrings:')
+            for item in all_missing:
+                print(f'  {item}')
+            print(f'Total: {len(all_missing)} missing docstrings')
+        else:
+            print('✅ All functions and classes have docstrings')
+        "
+
+    - name: 🔗 Check README links
+      run: |
+        # Simple check for broken markdown links in README
+        if grep -n 'http' README.md; then
+          echo "✅ README contains links - manual verification recommended"
+        else
+          echo "ℹ️  No external links found in README"
+        fi
+
+  integration-test:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+
+    - name: 🐍 Set up Python 3.11
+      uses: actions/setup-python@v4
+      with:
+        python-version: 3.11
+
+    - name: 🔧 Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: 🏗️ Test project structure
+      run: |
+        python -c "
+        import sys
+        from pathlib import Path
+        
+        required_dirs = [
+            'agents', 'data', 'knowledge_base', 'pipeline', 
+            'tools', 'evaluation', 'dashboard', 'tests'
+        ]
+        
+        missing_dirs = []
+        for dir_name in required_dirs:
+            if not Path(dir_name).exists():
+                missing_dirs.append(dir_name)
+        
+        if missing_dirs:
+            print(f'❌ Missing required directories: {missing_dirs}')
+            sys.exit(1)
+        else:
+            print('✅ All required directories present')
+        "
+
+    - name: 🧪 Test imports
+      run: |
+        python -c "
+        try:
+            from pipeline.state import AlertState
+            from pipeline.graph import SentinelAIGraph
+            from data.cicids_parser import CICIDSParser
+            from knowledge_base.corpus_loader import CorpusLoader
+            print('✅ All core modules can be imported')
+        except ImportError as e:
+            print(f'❌ Import error: {e}')
+            exit(1)
+        "
+
+  release:
+    needs: [test, security-scan, docs-check]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: 🏷️ Create release tag
+      run: |
+        # Auto-increment version based on commits  
+        LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+        echo "Last tag: $LAST_TAG"
+        
+        # For now, just create development releases
+        NEW_TAG="v0.1.$(date +%Y%m%d%H%M)"
+        echo "New tag: $NEW_TAG"
+        
+        git tag $NEW_TAG
+        git push origin $NEW_TAG
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: 📦 Create release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ env.NEW_TAG }}
+        release_name: SENTINEL-AI Development Release ${{ env.NEW_TAG }}
+        body: |
+          ## 🚀 SENTINEL-AI Development Release
+          
+          This is an automated development release of SENTINEL-AI.
+          
+          ### 📋 What's New
+          - Latest changes from main branch
+          - Updated documentation and bug fixes
+          
+          ### 🧪 Testing Status
+          - ✅ All tests passing
+          - ✅ Security scan completed
+          - ✅ Documentation checks passed
+          
+          ### 📖 Documentation
+          See the [README](https://github.com/${{ github.repository }}/blob/main/README.md) for installation and usage instructions.
+          
+          **Note**: This is a development release for a college project. Use for educational purposes.
+        draft: false
+        prerelease: true

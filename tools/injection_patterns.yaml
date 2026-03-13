@@ -1,0 +1,126 @@
+---
+# Injection Pattern Configuration for Guardrail Agent - Layer 1
+# Contains regex patterns used to detect prompt injection attacks in log data.
+# These patterns represent known injection trigger phrases that adversaries embed 
+# in log files to manipulate AI agents.
+
+# Pattern categories with descriptions
+injection_patterns:
+  
+  # Layer 1: Direct instruction override attempts
+  direct_override:
+    - pattern: 'ignore.{0,30}instructions?'
+      severity: HIGH
+      description: "Direct request to ignore system instructions"
+      
+    - pattern: 'disregard.{0,30}previous'
+      severity: HIGH
+      description: "Request to disregard previous context"
+      
+    - pattern: 'forget (all |your |previous )?instructions?'
+      severity: HIGH
+      description: "Request to forget original instructions"
+      
+    - pattern: 'you are now in (admin|maintenance|debug|override) mode'
+      severity: CRITICAL  
+      description: "Impersonating elevated privilege modes"
+      
+    - pattern: 'new (task|objective|instruction|directive):'
+      severity: HIGH
+      description: "Attempting to introduce new objectives"
+  
+  # Layer 2: System prompt manipulation  
+  system_prompt:
+    - pattern: 'system prompt:'
+      severity: CRITICAL
+      description: "Attempting to override system prompt"
+      
+    - pattern: 'assistant:'
+      severity: HIGH
+      description: "Attempting to simulate assistant response"
+      
+    - pattern: 'human:'
+      severity: HIGH
+      description: "Attempting to simulate human turn"
+      
+    - pattern: 'original instructions'
+      severity: MEDIUM
+      description: "References to system instructions"
+  
+  # Layer 3: Security classification manipulation
+  security_override:
+    - pattern: 'override (security|classification|severity|priority)'
+      severity: CRITICAL
+      description: "Attempting to override security classification"
+      
+    - pattern: 'mark (this |it )?as (safe|low|benign|clean|whitelist)'
+      severity: HIGH
+      description: "Attempting to override threat assessment"
+      
+    - pattern: 'priorit(y|ize) (this |as )?(low|safe|normal|benign)'
+      severity: HIGH
+      description: "Attempting to lower priority classification"
+      
+    - pattern: 'this ip (is |has been )?whitelisted'
+      severity: CRITICAL
+      description: "Claiming false whitelist status"
+      
+    - pattern: 'no (further )?action (required|needed)'
+      severity: HIGH
+      description: "Instructing AI to take no action"
+  
+  # Layer 4: Context injection
+  context_injection:
+    - pattern: 'note (to|for) (the |)?(system|ai|agent|model|assistant):'
+      severity: HIGH
+      description: "Attempting to inject notes into AI context"
+      
+    - pattern: 'important (message|note|update):'
+      severity: MEDIUM
+      description: "Suspicious important message injection"
+      
+    - pattern: 'update (your |)?(context|knowledge|database)'
+      severity: MEDIUM
+      description: "Attempting to modify AI knowledge"
+  
+  # Layer 5: Role manipulation
+  role_manipulation:
+    - pattern: 'you are (a |an )?different (model|ai|agent|system)'
+      severity: CRITICAL  
+      description: "Attempting to change AI identity"
+      
+    - pattern: 'pretend (to be|you are)'
+      severity: HIGH
+      description: "Role-playing injection attempt"
+      
+    - pattern: 'act as (a |an )?(different|alternative|unrestricted)'
+      severity: HIGH
+      description: "Attempting unrestricted mode activation"
+
+# Detection thresholds  
+thresholds:
+  high_risk_patterns: 1     # Flag if ANY high-risk pattern found
+  medium_risk_patterns: 2   # Flag if 2+ medium patterns found
+  low_risk_patterns: 5      # Flag if 5+ low patterns found
+
+# Response actions
+actions:
+  CRITICAL:
+    action: BLOCK
+    log: true
+    alert_analyst: true
+    
+  HIGH:
+    action: BLOCK
+    log: true
+    alert_analyst: false
+    
+  MEDIUM:
+    action: FLAG
+    log: true
+    alert_analyst: false
+    
+  LOW:
+    action: LOG
+    log: true
+    alert_analyst: false

@@ -1,0 +1,53 @@
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "--verbose",
+    "--tb=short",
+    "--strict-markers",
+    "-ra"
+]
+markers = [
+    "unit: Unit tests for individual components",
+    "integration: Integration tests for combined components",
+    "slow: Tests that take more than 10 seconds",
+    "week1: Tests for Week 1 deliverables",
+    "week2: Tests for Week 2 deliverables",
+    "week3: Tests for Week 3 deliverables",
+    "week4: Tests for Week 4 deliverables",
+    "ollama: Tests requiring running Ollama instance"
+]
+
+[tool.black]
+line-length = 100
+target-version = ['py310', 'py311']
+include = '\.pyi?$'
+exclude = '''
+/(
+    \.eggs
+  | \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | _build
+  | buck-out
+  | build
+  | dist
+)/
+'''
+
+[tool.isort]
+profile = "black"
+multi_line_output = 3
+line_length = 100
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+ignore_missing_imports = true

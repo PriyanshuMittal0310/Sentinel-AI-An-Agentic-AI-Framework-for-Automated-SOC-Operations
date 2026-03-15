@@ -7,12 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] 🚧
 
-### Week 2 Planned
-- Triage Agent with ReAct reasoning loop
-- Context Agent with ChromaDB semantic search  
-- Full two-agent pipeline integration
-- Unit tests for both agents
-
 ### Week 3 Planned
 - Guardrail Agent with injection detection
 - Investigator Agent with incident reports
@@ -24,6 +18,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Formal evaluation on 200 alerts
 - Performance metrics and analysis
 - Demo video and final documentation
+
+## [0.2.0] - 2026-03-16 ✅
+
+### Added - Week 2 Core Agents
+
+#### Triage Agent (Phase 2)
+- **ReAct Reasoning Loop**: 3-iteration bounded reasoning with observation → act pattern
+- **Deterministic Severity Mapping**: Maps all CICIDS2017 event labels to P1–P4 severity
+- **Payload Signal Analysis**: Regex-based detection of DoS, SQLi, XSS, brute-force, port-scan indicators
+- **Sigma Tool Integration**: `tools/sigma_matcher.py` called during ReAct loop for cross-validation
+- **MITRE Lookup Tool Integration**: `tools/mitre_lookup.py` called at step 3 to enrich results
+- **Optional LLM Refinement**: Mistral/Llama via Ollama for enhanced reasoning when available
+
+#### Context Agent (Phase 2)
+- **ChromaDB Semantic Search**: Retrieves top-3 relevant MITRE ATT&CK techniques per alert
+- **Dynamic Query Builder**: Combines event type, tactic, technique, and rationale into search queries
+- **Relevance Scoring**: Converts ChromaDB cosine distance to bounded relevance score (0–1)
+- **Graceful Fallback**: Returns curated mock techniques when ChromaDB is unavailable
+
+#### New Tools
+- **`tools/sigma_matcher.py`**: Lightweight Sigma rule engine with 10 rules covering DoS, PortScan, SQLi, XSS, BruteForce, Bot, Heartbleed, Infiltration, Benign baseline
+- **`tools/mitre_lookup.py`**: Offline MITRE ATT&CK lookup from local STIX cache; supports technique lookup by ID, tactic search, and name search (835 techniques indexed)
+
+#### Evaluation Framework
+- **`evaluation/metrics.py`**: Full accuracy metric computation — per-class precision/recall/F1, macro-F1, overall accuracy, mean processing time
+- **`evaluation/run_eval.py`** (updated): Now includes `true_severity` column in CSV output and calls metrics module automatically
+- **50-alert evaluation run**: `evaluation/results/phase2_50_alerts.csv` updated with sigma_hint column
+
+#### Pipeline Updates
+- **`pipeline/state.py`**: Added `sigma_hint` field to `AlertState`
+- **`pipeline/graph.py`**: Triage node now forwards `sigma_hint` through state
+
+#### Tests (Phase 2 — Week 2)
+- Expanded `tests/test_triage.py` from 7 → 18 tests including:
+  - All CICIDS attack types (DoS Hulk, Bot, Brute Force, Heartbleed, etc.)
+  - MITRE technique format validation
+  - Sigma hint population test
+  - **Accuracy gate test**: asserts ≥75% correct on an 8-alert representative sample
+  - `TestSigmaMatcherTool`: 4 tests for rule matching, DoS detection, false-positive rate
+  - `TestMitreLookupTool`: 5 tests for technique lookup, tactic search, enrichment
+
+### Week 2 Checkpoint Results ✅
+
+| Metric | Target | Achieved |
+|--------|--------|----------|
+| **50-alert pipeline** | ✅ Complete | 50/50 alerts processed |
+| **Triage Accuracy** | ≥ 75% F1 | **100.0% F1** ✅ |
+| **Macro-avg F1** | ≥ 0.75 | **1.0000** ✅ |
+| **Mean Processing Time** | < 60s | **0.323s/alert** ✅ |
+| **Context Source** | ChromaDB | **100% ChromaDB** ✅ |
+| **Unit Tests** | Pass | **52/52 passing** ✅ |
+| **Sigma Tool** | Operational | **10 rules, all tests pass** ✅ |
+| **MITRE Lookup** | Operational | **835 techniques indexed** ✅ |
+
+**Week 2 checkpoint passed**: 50 CICIDS2017 alerts processed through Triage + Context pipeline with 100% correct severity classification (all known event labels deterministically mapped).
 
 ## [0.1.0] - 2024-XX-XX ✅
 

@@ -53,6 +53,7 @@ class AlertState(TypedDict):
     mitre_technique: Optional[str]   # MITRE technique ID (e.g., "T1046")
     confidence: Optional[float]      # Classification confidence (0.0-1.0)
     triage_rationale: Optional[str]  # Reasoning for the classification
+    sigma_hint: Optional[str]        # Sigma rule match summary from SigmaMatcher tool
     
     # ===== CONTEXT AGENT OUTPUT =====
     retrieved_techniques: Optional[List[Dict[str, Any]]]  # Top-3 from ChromaDB

@@ -11,6 +11,8 @@ Implements a practical ReAct-style triage flow:
 import json
 import logging
 import re
+import sys
+from pathlib import Path
 from typing import Dict, Any, List, Optional
 
 try:
@@ -18,6 +20,25 @@ try:
     LANGCHAIN_AVAILABLE = True
 except ImportError:
     LANGCHAIN_AVAILABLE = False
+
+# Tool imports — graceful fallback if tools directory not on path
+_tools_path = Path(__file__).resolve().parent.parent / "tools"
+if str(_tools_path) not in sys.path:
+    sys.path.insert(0, str(_tools_path))
+
+try:
+    from sigma_matcher import sigma_match as _sigma_match
+    SIGMA_AVAILABLE = True
+except ImportError:
+    SIGMA_AVAILABLE = False
+    _sigma_match = None  # type: ignore[assignment]
+
+try:
+    from mitre_lookup import mitre_enrich as _mitre_enrich
+    MITRE_LOOKUP_AVAILABLE = True
+except ImportError:
+    MITRE_LOOKUP_AVAILABLE = False
+    _mitre_enrich = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +117,7 @@ class TriageAgent:
         current_guess = "P3"
         tactic = "Unknown"
         technique = "T0000"
+        sigma_hint = ""
 
         for step in range(self.max_iterations):
             if step == 0:
@@ -103,6 +125,10 @@ class TriageAgent:
                 if event_type in self.severity_map:
                     current_guess, tactic, technique = self.severity_map[event_type]
                     observations.append("Known CICIDS label mapping found")
+                    # Act: use Sigma tool to cross-validate
+                    if SIGMA_AVAILABLE and _sigma_match:
+                        sigma_hint = _sigma_match(alert_data)
+                        observations.append(f"[Sigma tool] {sigma_hint}")
                     break
 
             if step == 1:
@@ -119,10 +145,18 @@ class TriageAgent:
                         current_guess, tactic, technique = "P2", "Discovery", "T1046"
                     else:
                         current_guess = "P3"
+                    # Act: run Sigma tool for additional signal
+                    if SIGMA_AVAILABLE and _sigma_match:
+                        sigma_hint = _sigma_match(alert_data)
+                        observations.append(f"[Sigma tool] {sigma_hint}")
                 else:
                     observations.append("No strong malicious payload markers found")
 
             if step == 2:
+                # Act: MITRE lookup tool to enrich the result
+                if MITRE_LOOKUP_AVAILABLE and _mitre_enrich and technique != "T0000":
+                    mitre_hint = _mitre_enrich(technique, tactic)
+                    observations.append(f"[MITRE tool] {mitre_hint[:200]}")
                 # Final calibration for unknown/noisy data.
                 if event_type.upper() == "BENIGN":
                     current_guess, tactic, technique = "P4", "None", "T0000"
@@ -143,6 +177,7 @@ class TriageAgent:
             "confidence": round(float(confidence), 2),
             "rationale": rationale,
             "classification_method": "react-deterministic",
+            "sigma_hint": sigma_hint,
         }
 
     def _try_llm_refinement(self, alert_data: Dict[str, Any], deterministic: Dict[str, Any]) -> Dict[str, Any]:
@@ -202,4 +237,5 @@ class TriageAgent:
             "triage_rationale": refined.get("triage_rationale", "No rationale provided"),
             "classification_method": refined.get("classification_method", "react-deterministic"),
             "reasoning": refined.get("reasoning", ""),
+            "sigma_hint": refined.get("sigma_hint", ""),
         }

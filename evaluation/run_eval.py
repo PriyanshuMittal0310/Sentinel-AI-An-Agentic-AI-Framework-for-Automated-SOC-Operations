@@ -1,8 +1,9 @@
 """
 Phase 2 evaluation runner.
 
-Runs the Guardrail -> Triage -> Context -> Investigator pipeline over 50 alerts
-and writes a CSV log for manual review.
+Runs the Guardrail -> Triage -> Context pipeline over 50 alerts from the
+CICIDS2017 processed dataset, writes a CSV log, and computes triage accuracy
+metrics (target: macro-F1 ≥ 0.75).
 """
 
 import csv
@@ -16,6 +17,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from pipeline.graph import SentinelAIGraph
+from evaluation.metrics import compute_metrics, print_report
 
 
 def load_alerts(alert_file: Path) -> List[Dict[str, Any]]:
@@ -47,6 +49,9 @@ def run_phase2_eval(sample_size: int = 50) -> Path:
                 "alert_id": result.get("alert_id", ""),
                 "event_type": result.get("event_type", ""),
                 "source_ip": result.get("source_ip", ""),
+                # Ground truth (from cicids_alerts.json — available for evaluation)
+                "true_severity": alert.get("true_severity", ""),
+                # Predicted output from Triage Agent
                 "severity": result.get("severity", ""),
                 "mitre_tactic": result.get("mitre_tactic", ""),
                 "mitre_technique": result.get("mitre_technique", ""),
@@ -54,6 +59,7 @@ def run_phase2_eval(sample_size: int = 50) -> Path:
                 "confidence": result.get("confidence", ""),
                 "context_source": (result.get("context_metadata") or {}).get("source", ""),
                 "processing_time_seconds": result.get("processing_time_seconds", ""),
+                "sigma_hint": result.get("sigma_hint", ""),
             }
         )
 
@@ -64,9 +70,15 @@ def run_phase2_eval(sample_size: int = 50) -> Path:
             writer.writeheader()
             writer.writerows(rows)
 
+    print(f"\nPhase 2 evaluation CSV written to: {output_file}")
+
+    # Compute and display accuracy metrics
+    metrics = compute_metrics(rows)
+    print_report(metrics)
+
     return output_file
 
 
 if __name__ == "__main__":
     out = run_phase2_eval(sample_size=50)
-    print(f"Phase 2 evaluation CSV written to: {out}")
+

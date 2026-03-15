@@ -169,6 +169,7 @@ class SentinelAIGraph:
             state["mitre_technique"] = triage_result.get("mitre_technique", "T0000")
             state["confidence"] = triage_result.get("confidence", 0.5)
             state["triage_rationale"] = triage_result.get("triage_rationale", "No rationale")
+            state["sigma_hint"] = triage_result.get("sigma_hint", "")
             
             execution_time = time.time() - start_time
             state = log_agent_execution(state, "triage", execution_time, True)

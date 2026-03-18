@@ -119,6 +119,7 @@ def create_empty_alert_state(alert_id: str, raw_payload: str) -> AlertState:
         mitre_technique=None,
         confidence=None,
         triage_rationale=None,
+        sigma_hint=None,
         
         # Context fields
         retrieved_techniques=None,

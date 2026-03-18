@@ -35,16 +35,20 @@ except ImportError:
 
 # Support both direct execution and package import
 try:
-    from .state import AlertState, log_agent_execution, add_error, finalize_state
+    from .state import AlertState, log_agent_execution, add_error, add_warning, finalize_state
 except ImportError:
-    from pipeline.state import AlertState, log_agent_execution, add_error, finalize_state
+    from pipeline.state import AlertState, log_agent_execution, add_error, add_warning, finalize_state
 
 try:
     from agents.triage_agent import TriageAgent
     from agents.context_agent import ContextAgent
+    from agents.guardrail_agent import GuardrailAgent
+    from agents.investigator_agent import InvestigatorAgent
 except ImportError:
     from ..agents.triage_agent import TriageAgent
     from ..agents.context_agent import ContextAgent
+    from ..agents.guardrail_agent import GuardrailAgent
+    from ..agents.investigator_agent import InvestigatorAgent
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -68,8 +72,10 @@ class SentinelAIGraph:
         self.checkpointer_path = checkpointer_path
         self.graph = None
         self.checkpointer = None
+        self.guardrail_agent = GuardrailAgent()
         self.triage_agent = TriageAgent()
         self.context_agent = ContextAgent()
+        self.investigator_agent = InvestigatorAgent()
         
         if LANGGRAPH_AVAILABLE:
             self._build_graph()
@@ -82,7 +88,7 @@ class SentinelAIGraph:
         # Create StateGraph with AlertState
         self.graph = StateGraph(AlertState)
         
-        # Add all agent nodes (empty stubs for Week 1)
+        # Add all agent nodes
         self.graph.add_node("guardrail", self._guardrail_agent_stub)
         self.graph.add_node("triage", self._triage_agent_stub)
         self.graph.add_node("context", self._context_agent_stub)
@@ -118,21 +124,21 @@ class SentinelAIGraph:
     
     def _guardrail_agent_stub(self, state: AlertState) -> AlertState:
         """
-        Guardrail Agent stub - Week 1 implementation.
-        
-        For Week 1, this just marks all alerts as clean and logs execution.
-        Week 3 will implement actual injection detection logic.
+        Guardrail Agent node.
+
+        Week 3 implementation:
+        - Layer 1: input payload scanning before any downstream agent runs.
         """
         start_time = time.time()
         
         try:
             logger.info(f"🛡️  Guardrail Agent processing alert {state['alert_id']}")
-            
-            # Week 1: Mark all alerts as clean (no injection detection yet)
-            state["is_clean"] = True
-            state["injection_reason"] = None
-            state["injection_confidence"] = 0.0
-            state["guardrail_layer"] = "stub"
+
+            result = self.guardrail_agent.check_alert(dict(state))
+            state["is_clean"] = result.get("is_clean", True)
+            state["injection_reason"] = result.get("injection_reason")
+            state["injection_confidence"] = result.get("injection_confidence", 0.0)
+            state["guardrail_layer"] = result.get("guardrail_layer")
             
             execution_time = time.time() - start_time
             state = log_agent_execution(state, "guardrail", execution_time, True)
@@ -223,50 +229,55 @@ class SentinelAIGraph:
 
     def _investigator_agent_stub(self, state: AlertState) -> AlertState:
         """
-        Investigator Agent stub - Week 1 implementation.
-        
-        For Week 1, this generates a simple incident report template.
-        Week 3 will implement full LLM-powered investigation with reasoning.
+        Investigator Agent node.
+
+        Week 3 implementation:
+        - Generate report from alert + triage + context.
+        - Run Guardrail Layer 2 verification over final output.
         """
         start_time = time.time()
         
         try:
             logger.info(f"📝 Investigator Agent processing alert {state['alert_id']}")
-            
-            # Week 1: Template-based incident report
-            alert_id = state.get("alert_id", "Unknown")
-            event_type = state.get("event_type", "Unknown") 
-            severity = state.get("severity", "P3")
-            source_ip = state.get("source_ip", "Unknown")
-            
-            # Generate basic incident summary
-            incident_summary = f"""
-SECURITY INCIDENT REPORT (Week 1 Stub)
-=====================================
-Alert ID: {alert_id}
-Timestamp: {datetime.now().isoformat()}
-Event Type: {event_type}
-Severity: {severity}
-Source IP: {source_ip}
 
-SUMMARY:
-Detected {event_type} activity from {source_ip}. 
-Classified as severity {severity} by the Triage Agent.
+            triage_result = {
+                "severity": state.get("severity"),
+                "mitre_tactic": state.get("mitre_tactic"),
+                "mitre_technique": state.get("mitre_technique"),
+                "confidence": state.get("confidence"),
+                "triage_rationale": state.get("triage_rationale"),
+            }
+            context_result = {
+                "retrieved_techniques": state.get("retrieved_techniques") or [],
+                "context_query": state.get("context_query"),
+                "context_metadata": state.get("context_metadata") or {},
+            }
 
-This is a Week 1 stub report. Full investigation capabilities 
-will be available in Week 3 with LLM-powered analysis.
-            """.strip()
-            
-            # Basic recommended actions
-            recommended_actions = [
-                f"Monitor traffic from source IP {source_ip}",
-                f"Review logs for similar {event_type} patterns",
-                "Update security monitoring rules if needed"
-            ]
-            
-            state["incident_summary"] = incident_summary
-            state["recommended_actions"] = recommended_actions
-            state["investigation_confidence"] = 0.6  # Moderate confidence for stub
+            report = self.investigator_agent.generate_report(dict(state), triage_result, context_result)
+
+            state["incident_summary"] = report.get("incident_summary", "")
+            state["recommended_actions"] = report.get("recommended_actions", [])
+            state["investigation_confidence"] = report.get("investigation_confidence", 0.6)
+
+            # Layer 2 verification checks if generated output is semantically safe.
+            verify_input = {
+                "severity": state.get("severity"),
+                "incident_summary": state.get("incident_summary"),
+                "recommended_actions": state.get("recommended_actions"),
+            }
+            layer2 = self.guardrail_agent.verify_final_output(dict(state), verify_input)
+            if layer2.get("injection_detected"):
+                state["is_clean"] = False
+                state["injection_reason"] = layer2.get("injection_reason")
+                state["injection_confidence"] = max(
+                    float(state.get("injection_confidence") or 0.0),
+                    float(layer2.get("injection_confidence") or 0.0),
+                )
+                state["guardrail_layer"] = "layer2"
+                state = add_warning(
+                    state,
+                    f"Layer 2 guardrail flagged investigator output: {state.get('injection_reason')}",
+                )
             
             execution_time = time.time() - start_time
             state = log_agent_execution(state, "investigator", execution_time, True)
@@ -328,6 +339,12 @@ will be available in Week 3 with LLM-powered analysis.
             protocol=alert_data.get("protocol"),
             event_type=alert_data.get("event_type", "Unknown"),
             timestamp=alert_data.get("timestamp", datetime.now().isoformat()),
+            flow_duration=alert_data.get("flow_duration"),
+            total_fwd_packets=alert_data.get("total_fwd_packets"),
+            total_backward_packets=alert_data.get("total_backward_packets"),
+            flow_bytes_per_sec=alert_data.get("flow_bytes_per_sec"),
+            true_severity=alert_data.get("true_severity"),
+            true_mitre_technique=alert_data.get("true_mitre_technique"),
             
             # Initialize tracking fields
             pipeline_start_time=datetime.now().isoformat(),
